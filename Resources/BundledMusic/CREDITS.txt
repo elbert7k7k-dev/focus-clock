@@ -1,0 +1,32 @@
+可随开源项目分发的内置示范音乐来源
+
+许可：CC0 1.0 Universal（公共领域贡献）
+许可链接：https://creativecommons.org/publicdomain/zero/1.0/
+许可原文：https://creativecommons.org/publicdomain/zero/1.0/legalcode.en
+作者资源详情页本次逐项读取，均直接标注CC0；CC0允许复制、修改、公开再分发和商用，无强制署名条件。本项目仍保留作者、来源和修改说明以便追溯，不暗示作者对软件的背书。
+代码可采用MIT许可证；这两份音乐分别保持CC0，不将音乐版权改写为代码作者所有。
+
+文件：calm-theme.m4a
+作品：Calm Theme
+作者：pebonius
+作品来源：https://opengameart.org/content/calm-music-0
+原始音频下载：https://opengameart.org/sites/default/files/calm_theme.ogg
+形式：作者发布的完整音乐音轨，约1分57秒；没有裁成试听片段。
+最终音频：AAC/M4A，117.201995秒，2350541字节，44100Hz，2声道。
+SHA-256：2565e1d4f1b6b140131571a01dd7499ba3d0921996797ee776e167930141e7f8
+修改：原始OGG完整转码为160kbps AAC/M4A以便Mac工具载入；未裁切、拼接、加速或循环延长。移除非必要软件标签，仅保留曲名、作者、CC0及必需容器信息。
+验证：ffmpeg全文件无声解码退出0，Mac系统afinfo识别退出0；未播放实听、未导入应用。
+
+文件：heavenly-loop.m4a
+作品：Heavenly Loop
+作者：isaiah658
+作品来源：https://opengameart.org/content/heavenly-loop
+原始音频下载：https://opengameart.org/sites/default/files/Heavenly%20Loop_0.ogg
+形式：作者明确发布为短循环环境音乐，约33.65秒；不称完整长歌曲。
+最终音频：AAC/M4A，33.651995秒，681244字节，44100Hz，2声道。
+SHA-256：af558ed319fb38ff3acb9cbea74a944a3b8c22e04eb8e05b839cb090d430380e
+修改：原始OGG完整转码为160kbps AAC/M4A以便Mac工具载入；未裁切、拼接、加速或循环延长。移除非必要软件标签，仅保留曲名、作者、CC0及必需容器信息。
+验证：ffmpeg全文件无声解码退出0，Mac系统afinfo识别退出0；未播放实听、未导入应用。
+
+核验日期：2026-10-28 07:04:00 PDT
+此来源说明没有私人路径、账号或用户9首商业音乐。两份手动导入素材与这两首不同，不随这里自动导入。

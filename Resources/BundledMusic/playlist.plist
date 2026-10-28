@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>version</key>
+	<integer>1</integer>
+	<key>packID</key>
+	<string>focus-clock-starter-v1</string>
+	<key>name</key>
+	<string>内置轻音乐</string>
+	<key>tracks</key>
+	<array>
+		<dict>
+			<key>fileName</key>
+			<string>calm-theme.m4a</string>
+			<key>title</key>
+			<string>Calm Theme · pebonius</string>
+		</dict>
+		<dict>
+			<key>fileName</key>
+			<string>heavenly-loop.m4a</string>
+			<key>title</key>
+			<string>Heavenly Loop · isaiah658</string>
+		</dict>
+	</array>
+</dict>
+</plist>
