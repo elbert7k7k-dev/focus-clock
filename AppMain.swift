@@ -89,7 +89,7 @@ private func focusDurationText(_ seconds: Double) -> String {
 private final class TimerViewController: NSViewController {
     enum Event {
         case primary, reset, stop, mode(FocusMode), configure(Double), history
-        case reminderSettings, previewSound, closePanel, quit
+        case reminderSettings, previewSound, playlist, closePanel, quit
     }
     var onEvent: ((Event) -> Void)?
     private let ring = RingView(frame: NSRect(x: 24, y: 181, width: 124, height: 124))
@@ -174,13 +174,13 @@ private final class TimerViewController: NSViewController {
         history.target = self
         history.action = #selector(historyClicked)
         view.addSubview(history)
-        sound.frame = NSRect(x: 24, y: 75, width: 246, height: 29)
+        sound.frame = NSRect(x: 194, y: 75, width: 162, height: 29)
         sound.bezelStyle = .rounded
         sound.font = .systemFont(ofSize: 12)
         sound.target = self
         sound.action = #selector(soundChanged)
         view.addSubview(sound)
-        _ = button("试听", NSRect(x: 280, y: 75, width: 76, height: 29), #selector(previewClicked))
+        _ = button("专注歌单 · 载入音乐", NSRect(x: 24, y: 75, width: 166, height: 29), #selector(playlistClicked))
         let note = label("暂停、休息和体验不计入专注记录", NSRect(x: 20, y: 48, width: 340, height: 18), 11)
         note.alignment = .center
         view.addSubview(note)
@@ -200,7 +200,7 @@ private final class TimerViewController: NSViewController {
         if view.window?.firstResponder !== minutes.currentEditor() {
             minutes.stringValue = String(Int(engine.focusDurationSeconds / 60))
         }
-        sound.title = reminder.mode == .sound ? "到点提醒：提示音 ×\(reminder.repeatCount) · 设置" : "到点提醒：\(reminder.mode.title) · 设置"
+        sound.title = reminder.mode == .sound ? "声音设置 · 闹钟 ×\(reminder.repeatCount)" : "声音设置 · \(reminder.mode.title)"
         if reminderError != nil { sound.title = "提醒播放异常 · 设置 / 试听" }
         sound.toolTip = reminderError
         end.isEnabled = engine.phase == .running || engine.phase == .paused
@@ -223,6 +223,7 @@ private final class TimerViewController: NSViewController {
     @objc private func resetClicked() { onEvent?(.reset) }
     @objc private func historyClicked() { onEvent?(.history) }
     @objc private func previewClicked() { onEvent?(.previewSound) }
+    @objc private func playlistClicked() { onEvent?(.playlist) }
     @objc private func soundChanged() { onEvent?(.reminderSettings) }
     @objc private func closeClicked() { onEvent?(.closePanel) }
     @objc private func quitClicked() { onEvent?(.quit) }
@@ -369,6 +370,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var reminderWindow: NSWindow?
     private let reminderDefaultsKey = "ReminderSettingsV1"
     private var completionSoundPlayed = false
+    private var audioStore: AudioLibraryStore?
+    private var audioLibraryError: String?
+    private let music = FocusMusicController()
+    private let playlistController = PlaylistViewController()
+    private var playlistWindow: NSWindow?
+    private var musicFollowsTimer = false
+    private var isInstallingBundledMusic = false
+    private var pendingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundleID = Bundle.main.bundleIdentifier,
@@ -384,6 +393,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             calendar.firstWeekday = 2
             historyStore = try FocusHistoryStore(fileURL: folder.appendingPathComponent("focus-history.json"), calendar: calendar)
         } catch { historyError = error.localizedDescription }
+        do {
+            let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("FocusClockLocal", isDirectory: true)
+            audioStore = try AudioLibraryStore(rootURL: folder)
+        } catch { audioLibraryError = error.localizedDescription }
+        music.resolveURL = { [weak self] name in
+            guard let store = self?.audioStore else { throw CocoaError(.fileReadNoSuchFile) }
+            return try store.audioURL(fileName: name)
+        }
+        music.onChange = { [weak self] in self?.playlistController.refreshPlayback() }
+        reminder.onPlaybackStateChanged = { [weak self] playing in self?.music.isDucked = playing }
+        playlistController.store = audioStore
+        playlistController.player = music
+        playlistController.onLibraryChange = { [weak self] in self?.reloadMusicLibrary() }
+        reloadMusicLibrary()
+        installBundledMusic()
         if let data = UserDefaults.standard.data(forKey: reminderDefaultsKey),
            let value = try? JSONDecoder().decode(ReminderSettings.self, from: data),
            let checked = try? value.validated() { reminder.settings = checked }
@@ -485,7 +510,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let id = screenID(screen) { UserDefaults.standard.set(NSNumber(value: id), forKey: screenKey) }
         if let window = historyWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 900, height: 740)) }
-        if let window = reminderWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 330)) }
+        if let window = reminderWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 430)) }
+        if let window = playlistWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 600, height: 510)) }
         if popover.isShown { popover.performClose(nil) }
     }
 
@@ -545,13 +571,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         case .history:
             if engine.phase == .running { engine.pause(); accountHistory(forceSave: true) }
             notifyCompletion(previousPhase: previousPhase)
-            synchronizeTicker(); render(); showHistory(); return
+            synchronizeMusicWithTimer(); synchronizeTicker(); render(); showHistory(); return
         case .reminderSettings: showReminderSettings(); return
-        case .previewSound: reminder.play(); showPlaybackError(); return
+        case .previewSound: playReminder(); return
+        case .playlist: showPlaylist(); return
         case .closePanel: popover.performClose(nil); return
         case .quit: NSApplication.shared.terminate(nil); return
         }
         notifyCompletion(previousPhase: previousPhase)
+        synchronizeMusicWithTimer()
         synchronizeTicker()
         render()
     }
@@ -560,8 +588,73 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         guard previousPhase == .running, engine.phase == .finished,
               engine.mode == .focus, engine.remaining == 0, !completionSoundPlayed else { return }
         completionSoundPlayed = true
+        playReminder()
+    }
+
+    private func playReminder() {
+        reminder.customAudioURL = reminder.settings.customAudioFileName.flatMap { try? audioStore?.audioURL(fileName: $0) }
         reminder.play()
         showPlaybackError()
+    }
+
+    private func reloadMusicLibrary() {
+        guard let store = audioStore else { return }
+        let wasFollowing = musicFollowsTimer
+        let oldPlaylist = music.playlistID
+        music.volume = store.musicVolume
+        music.loopMode = store.loopMode
+        musicFollowsTimer = store.followsFocusTimer
+        music.loadPlaylist(store.playlists.first { $0.id == store.selectedPlaylistID })
+        if musicFollowsTimer && (!wasFollowing || oldPlaylist != music.playlistID) { synchronizeMusicWithTimer() }
+    }
+
+    private func installBundledMusic() {
+        guard let store = audioStore else { return }
+        let resources = Bundle.main.resourceURL
+        isInstallingBundledMusic = true
+        playlistController.setInstallationState(true)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try BundledMusicInstaller.installIfNeeded(store: store, resourcesURL: resources) }
+            let failure: String?
+            if case .failure(let error) = result { failure = error.localizedDescription } else { failure = nil }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isInstallingBundledMusic = false
+                self.playlistController.setInstallationState(false, error: failure)
+                self.reloadMusicLibrary()
+                self.playlistController.reloadLibrary()
+                if self.pendingTermination { NSApplication.shared.reply(toApplicationShouldTerminate: true) }
+            }
+        }
+    }
+
+    private func synchronizeMusicWithTimer() {
+        guard musicFollowsTimer else { return }
+        if engine.phase == .running && engine.isFocusSession {
+            if !music.isPlaying, !music.tracks.isEmpty { music.play() }
+        } else { music.pause() }
+    }
+
+    private func showPlaylist() {
+        popover.performClose(nil)
+        guard audioStore != nil else {
+            let alert = NSAlert(); alert.messageText = "本机音乐库未能打开"
+            alert.informativeText = audioLibraryError ?? "请检查本工具自己的音频目录。"
+            alert.runModal(); return
+        }
+        if playlistWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 510),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "专注歌单"
+            window.contentViewController = FocusScrollableController(child: playlistController, naturalSize: NSSize(width: 600, height: 510))
+            window.isReleasedWhenClosed = false
+            fitAuxiliaryWindow(window, naturalSize: NSSize(width: 600, height: 510), center: true)
+            playlistWindow = window
+        }
+        if let window = playlistWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 600, height: 510)) }
+        playlistController.reloadLibrary()
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        playlistWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func showPlaybackError() {
@@ -576,13 +669,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
         reminderSettingsController.settings = reminder.settings
         reminderSettingsController.voiceOptions = reminder.voiceOptions
+        reminderSettingsController.onImportAudio = { [weak self] url in
+            guard let store = self?.audioStore else { throw CocoaError(.fileWriteUnknown) }
+            return try store.importReminder(url)
+        }
+        reminderSettingsController.onImportAudioAsync = { [weak self] url, completion in
+            guard let store = self?.audioStore else { completion(.failure(CocoaError(.fileWriteUnknown))); return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try store.importReminder(url) }
+                DispatchQueue.main.async { completion(result) }
+            }
+        }
         reminderSettingsController.onSave = { [weak self] value, preview in
             guard let self else { return }
             do {
                 self.reminder.settings = try value.validated()
                 UserDefaults.standard.set(try JSONEncoder().encode(value), forKey: self.reminderDefaultsKey)
                 self.render()
-                if preview { self.reminder.play(); self.showPlaybackError() }
+                if preview { self.playReminder() }
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "提醒设置未保存"
@@ -592,15 +696,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         reminderSettingsController.onStop = { [weak self] in self?.reminder.stop() }
         if reminderWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 330),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 430),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "到点提醒设置"
-            window.contentViewController = FocusScrollableController(child: reminderSettingsController, naturalSize: NSSize(width: 440, height: 330))
+            window.contentViewController = FocusScrollableController(child: reminderSettingsController, naturalSize: NSSize(width: 440, height: 430))
             window.isReleasedWhenClosed = false
-            fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 330), center: true)
+            fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 430), center: true)
             reminderWindow = window
         }
-        if let window = reminderWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 330)) }
+        if let window = reminderWindow { fitAuxiliaryWindow(window, naturalSize: NSSize(width: 440, height: 430)) }
         reminderSettingsController.reloadSettings()
         NSApplication.shared.activate(ignoringOtherApps: true)
         reminderWindow?.makeKeyAndOrderFront(nil)
@@ -620,11 +724,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.tick()
         accountHistory(forceSave: engine.phase == .finished)
         notifyCompletion(previousPhase: previous)
+        if engine.phase != .running { synchronizeMusicWithTimer() }
         if engine.phase != .running { ticker?.invalidate(); ticker = nil }
         render()
     }
 
     private func pauseForSystemSleep() {
+        music.pause()
+        reminder.stop()
         guard engine.phase == .running else { return }
         let previousPhase = engine.phase
         accountHistory(forceSave: true)
@@ -709,6 +816,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController?.view.window?.makeFirstResponder(nil)
         render()
     }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if isInstallingBundledMusic {
+            pendingTermination = true
+            return .terminateLater
+        }
+        return .terminateNow
+    }
     func applicationWillTerminate(_ notification: Notification) {
         if engine.phase == .running { engine.pause() }
         accountHistory(forceSave: true)
@@ -721,6 +835,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWindow?.close()
         topPanel?.close(); topPanel = nil
         reminderWindow?.close()
+        playlistWindow?.close()
+        music.stop()
         reminder.stop()
     }
 }

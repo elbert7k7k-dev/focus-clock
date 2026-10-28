@@ -8,3 +8,11 @@ dist/
 *.mov
 *.mp4
 *.json
+*.wav
+*.mp3
+*.m4a
+*.aif
+*.aiff
+*.caf
+Audio/
+!Resources/BundledMusic/*.m4a

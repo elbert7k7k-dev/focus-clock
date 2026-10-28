@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 private struct TestFailure: Error, CustomStringConvertible {
     let description: String
@@ -25,6 +26,10 @@ private final class Checks {
 
 @main
 private struct ReminderTestRunner {
+    private static func tryVolume(_ value: ReminderSettings) -> Double? {
+        try? value.validated().volume
+    }
+
     static func main() throws {
         let check = Checks()
         try check.run("default is one chime with valid speech wording") {
@@ -119,33 +124,66 @@ private struct ReminderTestRunner {
             let data = Data(#"{"mode":"unknown","repeatCount":1,"speechText":"完成"}"#.utf8)
             try check.rejects({ _ = try JSONDecoder().decode(ReminderSettings.self, from: data) }, "Unknown mode accepted")
         }
-        try check.run("original chime is used only when actually available") {
-            var probes: [String] = []
-            let sound: String? = ReminderResourceSelection.firstAvailableSound { name in
-                probes.append(name)
-                return name == "Glass" ? "loaded-original" : nil
-            }
-            try check.expect(sound == "loaded-original", "Installed original chime was not selected")
-            try check.expect(probes == ["Glass"], "Successful selection should stop probing")
+        try check.run("old saved preferences keep choices and gain a default volume") {
+            let old = Data(#"{"mode":"speech","repeatCount":6,"speechText":"原来的提醒","voiceID":"local-voice"}"#.utf8)
+            let value = try JSONDecoder().decode(ReminderSettings.self, from: old)
+            try check.expect(value.mode == .speech && value.repeatCount == 6, "Legacy choice was erased")
+            try check.expect(value.speechText == "原来的提醒" && value.voiceID == "local-voice", "Legacy speech changed")
+            try check.expect(value.volume == 0.85 && value.customAudioFileName == nil, "Legacy defaults invalid")
+            _ = try value.validated()
         }
-        try check.run("missing original chime falls back to an installed system sound") {
-            var probes: [String] = []
-            let sound: String? = ReminderResourceSelection.firstAvailableSound { name in
-                probes.append(name)
-                return name == "Tink" ? "loaded-fallback" : nil
-            }
-            try check.expect(sound == "loaded-fallback", "Missing original chime blocked fallback")
-            try check.expect(probes == ["Glass", "Tink"], "Fallback preference order was not followed")
+        try check.run("missing optional fields use portable defaults") {
+            let value = try JSONDecoder().decode(ReminderSettings.self, from: Data("{}".utf8))
+            try check.expect(value == ReminderSettings(), "Missing fields did not use defaults")
         }
-        try check.run("no installed sound returns no fabricated or downloaded resource") {
-            var probes: [String] = []
-            let sound: String? = ReminderResourceSelection.firstAvailableSound { name in
-                probes.append(name)
-                return nil
+        try check.run("application volume accepts boundaries and rejects nonfinite or out-of-range values") {
+            for volume in [0.0, 0.01, 0.85, 1.0] {
+                var value = ReminderSettings()
+                value.volume = volume
+                try check.expect(tryVolume(value) == volume, "Valid volume changed")
             }
-            try check.expect(sound == nil, "Missing resources produced a fabricated sound")
-            try check.expect(probes == ReminderResourceSelection.preferredSoundNames, "Candidates were not checked exactly once")
-            try check.expect(Set(probes).count == probes.count, "Sound candidates contain duplicates")
+            for volume in [-0.01, 1.01, Double.nan, Double.infinity, -Double.infinity] {
+                var value = ReminderSettings()
+                value.volume = volume
+                try check.rejects({ _ = try value.validated() }, "Invalid volume was accepted")
+            }
+        }
+        try check.run("custom music stores a managed identifier and retains volume through JSON") {
+            let value = ReminderSettings(mode: .custom, repeatCount: 8, speechText: "", volume: 0.73,
+                customAudioFileName: "4F7901-music.m4a", customAudioTitle: "我的提醒音乐")
+            _ = try value.validated()
+            let data = try JSONEncoder().encode(value)
+            let decoded = try JSONDecoder().decode(ReminderSettings.self, from: data)
+            try check.expect(decoded == value, "Custom music settings lost fields")
+            try check.expect(String(data: data, encoding: .utf8)?.contains("/Users/") == false,
+                             "Settings exposed a source path")
+        }
+        try check.run("custom mode rejects missing file and path traversal") {
+            var value = ReminderSettings()
+            value.mode = .custom
+            try check.rejects({ _ = try value.validated() }, "Custom music without a file was accepted")
+            for invalid in ["", ".", "..", "../track.mp3", "/tmp/track.mp3", "folder/track.wav", "folder\\track.wav", "x\0y.mp3"] {
+                value.customAudioFileName = invalid
+                try check.rejects({ _ = try value.validated() }, "Unsafe managed filename was accepted")
+            }
+        }
+        try check.run("generated bell has bounded samples and a silent gap") {
+            let samples = ReminderBell.samples
+            try check.expect(samples.count == 39_690, "Bell duration changed")
+            let peak = samples.map { abs(Int($0)) }.max() ?? 0
+            try check.expect(peak > 25_000 && peak < 32_767, "Bell is too quiet or clipped")
+            try check.expect(samples.last == 0 && samples.suffix(8_000).allSatisfy { $0 == 0 },
+                             "Bell needs a silent tail between complete strikes")
+            try check.expect(samples.prefix(1_000).contains { $0 != 0 }, "Bell contains no attack")
+        }
+        try check.run("generated in-memory WAV decodes to one finite bell without playing") {
+            let data = ReminderBell.wavData
+            try check.expect(String(data: data.prefix(4), encoding: .ascii) == "RIFF", "WAV header missing")
+            try check.expect(data.count == 44 + ReminderBell.samples.count * 2, "PCM payload length mismatch")
+            let player = try AVAudioPlayer(data: data)
+            try check.expect(abs(player.duration - 0.9) < 0.001 && player.numberOfChannels == 1,
+                             "Generated sound cannot decode with the intended duration/channel count")
+            try check.expect(!player.isPlaying, "Decode-only verification unexpectedly played audio")
         }
         try check.run("automatic voice uses installed priority and preserves fallback candidates") {
             let ids = try ReminderResourceSelection.voiceCandidates(
