@@ -1,0 +1,10 @@
+.build/
+dist/
+.DS_Store
+*.log
+*.zip
+*.dmg
+*.png
+*.mov
+*.mp4
+*.json
